@@ -2,16 +2,16 @@
 # author: Simon Kowallik
 # version: 1.4
 #
-# This iRule requires BIG-IP v12 or higher to use the HTTP::cookie attribute command. 
-# Check https://github.com/f5devcentral/irules-toolbox/tree/master/security/http/cookies for a v11 iRule 
-#    that doesn't use HTTP::cookie attribute (but uses more CPU cycles) 
+# This iRule requires BIG-IP v12 or higher to use the HTTP::cookie attribute command.
+# Check https://github.com/f5devcentral/irules-toolbox/tree/master/security/http/cookies for a v11 iRule
+#    that doesn't use HTTP::cookie attribute (but uses more CPU cycles)
 #
 # History: version - author - description
-#	 1.0 - Simon Kowallik - initial version 
+#	 1.0 - Simon Kowallik - initial version
 #	 1.1 - Aaron Hooley - updated to add support for setting SameSite to Strict|Lax|None for BIG-IP and app cookies in Set-Cookie headers
 #			- Add option to remove SameSite=None cookies for incompatible browsers
 #	 1.2 - Aaron Hooley - Added option to rewrite all cookies without naming them explicitly or with prefixes
-#	 1.3 - Aaron Hooley - set samesite_compatible to 0 by default instead of a null string 
+#	 1.3 - Aaron Hooley - set samesite_compatible to 0 by default instead of a null string
 #	 1.4 - Aaron Hooley - Fixed issue with removing samesite=none cookies for incompatible clients and setting lax or strict
 #
 # What the iRule does:
@@ -38,7 +38,7 @@
 proc checkSameSiteCompatible {user_agent} {
 	# Procedure to check if a user-agent supports SameSite=None on cookies
 	#
-	# usage: 
+	# usage:
 	# set isSameSiteCompatible [call checkSameSiteCompatible {User-Agent-String}]
 	#
 	# check for incompatible user-agents: https://www.chromium.org/updates/same-site/incompatible-clients
@@ -68,7 +68,7 @@ proc checkSameSiteCompatible {user_agent} {
 			}
 		}
 	}
-	# If the current user-agent didn't match any known incompatible browser list, assume it can handle SameSite=None 
+	# If the current user-agent didn't match any known incompatible browser list, assume it can handle SameSite=None
 	return 1
 
 	# CPU Cycles on Executing (>100k test runs)
@@ -82,20 +82,20 @@ when CLIENT_ACCEPTED priority 100 {
 
 	# Set BIG-IP and app cookies found in Set-Cookie headers using this iRule to:
 	#
-	# none: Cookies will be sent in both first-party context and cross-origin requests; 
-	#		however, the value must be explicitly set to None and all browser requests must 
-	#		follow the HTTPS protocol and include the Secure attribute which requires an encrypted 
+	# none: Cookies will be sent in both first-party context and cross-origin requests;
+	#		however, the value must be explicitly set to None and all browser requests must
+	#		follow the HTTPS protocol and include the Secure attribute which requires an encrypted
 	#		connection. Cookies that don't adhere to that requirement will be rejected.
-	#		Both attributes are required together. If just None is specified without Secure or 
+	#		Both attributes are required together. If just None is specified without Secure or
 	#		if the HTTPS protocol is not used, the third-party cookie will be rejected.
 	#
-	# lax: Cookies will be sent automatically only in a first-party context and with HTTP GET requests. 
-	#		SameSite cookies will be withheld on cross-site sub-requests, such as calls to load images or iframes, 
+	# lax: Cookies will be sent automatically only in a first-party context and with HTTP GET requests.
+	#		SameSite cookies will be withheld on cross-site sub-requests, such as calls to load images or iframes,
 	#		but will be sent when a user navigates to the URL from an external site, e.g., by following a link.
 	#
 	# strict: browser never sends cookies in requests to third party domains
 	#
-	#		Above definitions from: https://docs.microsoft.com/en-us/microsoftteams/platform/resources/samesite-cookie-update 
+	#		Above definitions from: https://docs.microsoft.com/en-us/microsoftteams/platform/resources/samesite-cookie-update
 	#
 	# Note: this iRule does not modify cookies set on the client using Javascript or other methods outside of Set-Cookie headers!
 	set samesite_security "none"
@@ -136,6 +136,9 @@ when CLIENT_ACCEPTED priority 100 {
 	# set to 0 after testing
 	set samesite_debug 1
 
+	# Regex to match samesite=none optionally followed by a semi-colon, space, comma and an option space
+    set regex_samesite_none {samesite=none[\; ,]? ?}
+
 	# You shouldn't have to make changes to configuration below here
 
 	# Track the user-agent and whether it supports the SameSite cookie attribute
@@ -150,27 +153,27 @@ when CLIENT_ACCEPTED priority 100 {
 	}
 }
 
-# Run this test event before any other iRule HTTP_REQUEST events to set the User-Agent header value 
+# Run this test event before any other iRule HTTP_REQUEST events to set the User-Agent header value
 # Comment out this event when done testing user-agents
 #when HTTP_REQUEST priority 2 {
 
-	# known compatible 
+	# known compatible
 #	HTTP::header replace user-agent {my compatible user agent string}
-	# known INcompatible 
+	# known INcompatible
 #	HTTP::header replace user-agent {chrome/51.10}
 #}
 
 # Run this before any other iRule HTTP_REQUEST events on the virtual server
 when HTTP_REQUEST priority 100 {
 
-	if { $samesite_debug }{ 
-		log local0. "$prefix [string repeat "-" 40]" 
+	if { $samesite_debug }{
+		log local0. "$prefix [string repeat "-" 40]"
 		log local0. "$prefix [HTTP::host][HTTP::uri]"
 	}
 
 	# Check if user-agent can handle samesite=none if we're removing samesite=none cookies or if we're setting samesite=none
 
-	# If we're removing samesite=none cookies for incompatible browsers or we're setting samesite to none, 
+	# If we're removing samesite=none cookies for incompatible browsers or we're setting samesite to none,
 	#	we need to check the user-agent to see if it's compatible with samesite=none
 	if { $remove_samesite_for_incompatible_user_agents == 1 or $samesite_security eq "none"}{
 
@@ -200,7 +203,7 @@ when HTTP_RESPONSE_RELEASE priority 900 {
 				if { $samesite_debug }{ log local0. "$prefix Set SameSite=$samesite_security on $cookie" }
 
 				# Remove any prior instances of SameSite attributes
-				HTTP::cookie attribute $cookie remove {samesite} 
+				HTTP::cookie attribute $cookie remove {samesite}
 
 				# Insert a new SameSite attribute
 				HTTP::cookie attribute $cookie insert {samesite} $samesite_security
@@ -259,7 +262,7 @@ when HTTP_RESPONSE_RELEASE priority 900 {
 		if { $remove_samesite_for_incompatible_user_agents }{
 
 			# User-agent can't handle SameSite=None, so remove SameSite attribute from all cookies if SameSite=None
-			# This will use CPU cycles on BIG-IP so only enable it if you know BIG-IP or the web application is setting 
+			# This will use CPU cycles on BIG-IP so only enable it if you know BIG-IP or the web application is setting
 			# SameSite=None for all clients including incompatible ones
 			foreach cookie [HTTP::cookie names] {
 				if { [string tolower [HTTP::cookie attribute $cookie value SameSite]] eq "none" }{
@@ -268,6 +271,21 @@ when HTTP_RESPONSE_RELEASE priority 900 {
 				}
 			}
 		}
+
+		# Pre 12 code required if Duel domains are used with same cookie name, This will only trigger in those situations.
+
+        # Save the values of Set-Cookie header(s) to set_cookie_headers and then check if they contain the string samesite=none
+        if { [string match -nocase "*samesite=none*" [set set_cookie_headers [HTTP::header values {set-cookie}]]] }{
+
+            # We found at least one set-cookie header with samesite=none
+            # Remove all Set-Cookie headers
+            HTTP::header remove {Set-Cookie}
+
+            # Insert the Set-Cookie headers back in the response with SameSite=None removed
+            foreach set_cookie $set_cookie_headers {
+                HTTP::header insert {Set-Cookie} [regsub -nocase -all $regex_samesite_none $set_cookie ""]
+            }
+        }
 	}
 	# Log the modified Set-Cookie header values
 	if { $samesite_debug }{ log local0. "$prefix Final Set-Cookies: [HTTP::header values {Set-Cookie}]" }
