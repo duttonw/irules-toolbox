@@ -13,6 +13,7 @@
 #	 1.2 - Aaron Hooley - Added option to rewrite all cookies without naming them explicitly or with prefixes
 #	 1.3 - Aaron Hooley - set samesite_compatible to 0 by default instead of a null string
 #	 1.4 - Aaron Hooley - Fixed issue with removing samesite=none cookies for incompatible clients and setting lax or strict
+#    1.5 - William Dutton - Fixed issue with multi domains with duplicate cookie names.
 #
 # What the iRule does:
 # Sets SameSite to Strict, Lax or None (and sets Secure when SameSite=None) for compatible user-agents
@@ -132,9 +133,16 @@ when CLIENT_ACCEPTED priority 100 {
 	# set to 1 to enable, 0 to disable
 	set remove_samesite_for_incompatible_user_agents 1
 
+	# Duplicate Cookie Name's in use with different Domains,
+	# This should be enabled if You need to change all cookies but there is two cookies with the same name being set to to
+	# different domains, this is required as HTTP::cookie names only gives unique cookies not all cookies and only alters 1 record
+	# set to 1 to enable, 0 to disable
+	set duplicate_cookie_names 0
+
 	# Log debug to /var/log/ltm? 1=yes, 0=no
 	# set to 0 after testing
 	set samesite_debug 1
+
 
 	# Regex to match samesite=none optionally followed by a semi-colon, space, comma and an option space
     set regex_samesite_none {samesite=none[\; ,]? ?}
@@ -198,94 +206,210 @@ when HTTP_RESPONSE_RELEASE priority 900 {
 
 		if { $set_samesite_on_all }{
 			if { $samesite_debug }{ log local0. "$prefix Setting SameSite=$samesite_security on all cookies and exiting" }
-			foreach cookie [HTTP::cookie names] {
 
-				if { $samesite_debug }{ log local0. "$prefix Set SameSite=$samesite_security on $cookie" }
+			if { $duplicate_cookie_names } {
+                # Save all Set-Cookie header values to a list and remove all Set-Cookie headers
+                set set_cookie_headers [HTTP::header values {Set-Cookie}]
+                HTTP::header remove {Set-Cookie}
 
-				# Remove any prior instances of SameSite attributes
-				HTTP::cookie attribute $cookie remove {samesite}
+                foreach set_cookie $set_cookie_headers {
 
-				# Insert a new SameSite attribute
-				HTTP::cookie attribute $cookie insert {samesite} $samesite_security
+                    # Remove any prior instances of SameSite attribute and value from this Set-Cookie header
+                    if {[string match -nocase {*samesite=none*} $set_cookie]}{
+                        set set_cookie [regsub -nocase -all $regex_samesite_any $set_cookie ""]
+                        if { $samesite_debug }{ log local0. "$prefix Found samesite=none and removed it: $set_cookie"}
+                    }
+                    # Insert the current Set-Cookie header with SameSite attribute appended
+                    if {[string equal -nocase $samesite_security "none"]}{
+                        # Might want to check if Secure is already set in this header?
+                        HTTP::header insert {Set-Cookie} "$set_cookie SameSite=None; Secure;"
+                        if { $samesite_debug }{ log local0. "$prefix Adding Set-Cookie: $set_cookie SameSite=None; Secure;" }
+                    } else {
+                        HTTP::header insert {Set-Cookie} "$set_cookie; SameSite=$samesite_security;"
+                        if { $samesite_debug }{ log local0. "$prefix Adding Set-Cookie: $set_cookie SameSite=$samesite_security;" }
+                    }
+                }
 
-				# If samesite attribute is set to None, then the Secure flag must be set for browsers to accept the cookie
-				if {[string equal -nocase $samesite_security "none"]} {
-					HTTP::cookie secure $cookie enable
-				}
+			} else {
+                foreach cookie [HTTP::cookie names] {
+
+                    if { $samesite_debug }{ log local0. "$prefix Set SameSite=$samesite_security on $cookie" }
+
+                    # Remove any prior instances of SameSite attributes
+                    HTTP::cookie attribute $cookie remove {samesite}
+
+                    # Insert a new SameSite attribute
+                    HTTP::cookie attribute $cookie insert {samesite} $samesite_security
+
+                    # If samesite attribute is set to None, then the Secure flag must be set for browsers to accept the cookie
+                    if {[string equal -nocase $samesite_security "none"]} {
+                        HTTP::cookie secure $cookie enable
+                    }
+                }
 			}
 			# Exit this event in this iRule as we've already rewritten all cookies with SameSite
 			return
 		}
-		# Match named cookies exactly
-		if { $named_cookies ne {} }{
-			foreach cookie $named_cookies {
-				if { [HTTP::cookie exists $cookie] } {
-					# Remove any pre-existing SameSite attributes from this cookie as most clients use the most strict value if multiple instances are set
-					HTTP::cookie attribute $cookie remove {SameSite}
 
-					# Insert the SameSite attribute
-					HTTP::cookie attribute $cookie insert {SameSite} $samesite_security
+		if { $duplicate_cookie_names } {
+		    #User pre v12 script style as HTTP::cookie can't handle domains
 
-					# If samesite attribute is set to None, then the Secure flag must be set for browsers to accept the cookie
-					if {[string equal -nocase $samesite_security "none"]} {
-						HTTP::cookie secure $cookie enable
-					}
-				if { $samesite_debug }{ log local0. "$prefix Matched explicitly named cookie $cookie, set SameSite=$samesite_security" }
-				if { $samesite_debug }{ log local0. "$prefix " }
-				}
-			}
-		}
-		# Match a cookie prefix (cookie name starts with a prefix from the $cookie_prefixes list)
-		if { $cookie_prefixes ne {} }{
-			foreach cookie [HTTP::cookie names] {
-				foreach cookie_prefix $cookie_prefixes {
-					if { $cookie starts_with $cookie_prefix } {
-						# Remove any pre-existing SameSite attributes from this cookie as most clients use the most strict value if multiple instances are set
-						HTTP::cookie attribute $cookie remove {SameSite}
+            # Loop through each Set-Cookie header and check for exact named cookies and cookie prefixes
 
-						# Insert the SameSite attribute
-						HTTP::cookie attribute $cookie insert {SameSite} $samesite_security
-
-						# If samesite attribute is set to None, then the Secure flag must be set for browsers to accept the cookie
-						if { [string equal -nocase $samesite_security "none"] } {
-							HTTP::cookie secure $cookie enable
-						}
-						if { $samesite_debug }{ log local0. "$prefix Matched prefixed cookie $cookie, with prefix $cookie_prefix, set SameSite=$samesite_security, breaking from loop" }
-						break
-					}
-				}
-			}
-		}
-	} else {
-
-		# User-agent can't handle SameSite=None
-		if { $remove_samesite_for_incompatible_user_agents }{
-
-			# User-agent can't handle SameSite=None, so remove SameSite attribute from all cookies if SameSite=None
-			# This will use CPU cycles on BIG-IP so only enable it if you know BIG-IP or the web application is setting
-			# SameSite=None for all clients including incompatible ones
-			foreach cookie [HTTP::cookie names] {
-				if { [string tolower [HTTP::cookie attribute $cookie value SameSite]] eq "none" }{
-					HTTP::cookie attribute $cookie remove SameSite
-					if { $samesite_debug }{ log local0. "$prefix Removing SameSite for incompatible client from cookie=$cookie" }
-				}
-			}
-		}
-
-		# Pre 12 code required if Duel domains are used with same cookie name, This will only trigger in those situations.
-
-        # Save the values of Set-Cookie header(s) to set_cookie_headers and then check if they contain the string samesite=none
-        if { [string match -nocase "*samesite=none*" [set set_cookie_headers [HTTP::header values {set-cookie}]]] }{
-
-            # We found at least one set-cookie header with samesite=none
-            # Remove all Set-Cookie headers
+            # Save all Set-Cookie header values to a list and remove all Set-Cookie headers
+            set set_cookie_headers [HTTP::header values {Set-Cookie}]
             HTTP::header remove {Set-Cookie}
 
-            # Insert the Set-Cookie headers back in the response with SameSite=None removed
+            # Loop through each Set-Cookie header value
             foreach set_cookie $set_cookie_headers {
-                HTTP::header insert {Set-Cookie} [regsub -nocase -all $regex_samesite_none $set_cookie ""]
+
+                # Track whether we've already found a matching cookie in this set-cookie header value
+                set found 0
+
+                # Check for exact named cookies in this set-cookie header value
+                if { $named_cookies ne {} }{
+
+                    # Loop through the named cookies
+                    foreach named_cookie $named_cookies {
+
+                        # Check if the current set-cookie header matches the current named cookie
+                        if { [string match -nocase "${named_cookie}=*" $set_cookie ] } {
+
+
+                            # If samesite attribute is set to None, then the Secure flag must be set for browsers to accept the cookie
+                            if {[string equal -nocase $samesite_security "none"]} {
+
+                                # Insert this Set-Cookie with SameSite set
+                                HTTP::header insert {Set-Cookie} "${set_cookie}; SameSite=$samesite_security; Secure"
+                                if { $samesite_debug }{ log local0. "$prefix Found named $named_cookie in Set-Cookie header, inserted SameSite=None; Secure" }
+                            } else {
+                                # Insert this Set-Cookie with SameSite set
+                                HTTP::header insert {Set-Cookie} "${set_cookie}; SameSite=$samesite_security"
+                                if { $samesite_debug }{ log local0. "$prefix Found named $named_cookie in Set-Cookie header, inserted SameSite=$samesite_security" }
+                            }
+                            # Stop checking this set-cookie header
+                            set found 1
+                            break
+                        }
+                    }
+                }
+                # Match a cookie prefix (cookie name starts with a prefix from the $cookie_prefixes list)
+                if { $found==0 and $cookie_prefixes ne {} }{
+
+                    # Loop through the named cookies
+                    foreach cookie_prefix $cookie_prefixes {
+
+                        # Check if the current set-cookie header matches the current named cookie
+                        if { [string match -nocase "${cookie_prefix}*" $set_cookie ] } {
+
+                            if { $samesite_debug }{ log local0. "$prefix Found prefix $cookie_prefix in Set-Cookie header" }
+
+                            # If samesite attribute is set to None, then the Secure flag must be set for browsers to accept the cookie
+                            if {[string equal -nocase $samesite_security "none"]} {
+
+                                # Insert this Set-Cookie with SameSite set
+                                HTTP::header insert {Set-Cookie} "${set_cookie}; SameSite=$samesite_security; Secure"
+                                if { $samesite_debug }{ log local0. "$prefix Found prefix $cookie_prefix in Set-Cookie header, inserted SameSite=None; Secure" }
+
+                            } else {
+                                # Insert this Set-Cookie with SameSite set
+                                HTTP::header insert {Set-Cookie} "${set_cookie}; SameSite=$samesite_security"
+                                if { $samesite_debug }{ log local0. "$prefix Found prefix $cookie_prefix in Set-Cookie header, inserted SameSite=$samesite_security" }
+                            }
+                            # Stop checking this set-cookie header
+                            set found 1
+                            break
+                        }
+                    }
+                }
+                if {not $found}{
+                    # Insert Set-Cookie headers that didn't match either exactly named cookies or cookie prefixes
+                    HTTP::header insert {Set-Cookie} $set_cookie
+                }
             }
-        }
+
+
+		} else {
+		    # Can use HTTP::cookie as we are not dealing with duplicate cookie names
+
+            # Match named cookies exactly
+            if { $named_cookies ne {} }{
+                foreach cookie $named_cookies {
+                    if { [HTTP::cookie exists $cookie] } {
+                        # Remove any pre-existing SameSite attributes from this cookie as most clients use the most strict value if multiple instances are set
+                        HTTP::cookie attribute $cookie remove {SameSite}
+
+                        # Insert the SameSite attribute
+                        HTTP::cookie attribute $cookie insert {SameSite} $samesite_security
+
+                        # If samesite attribute is set to None, then the Secure flag must be set for browsers to accept the cookie
+                        if {[string equal -nocase $samesite_security "none"]} {
+                            HTTP::cookie secure $cookie enable
+                        }
+                    if { $samesite_debug }{ log local0. "$prefix Matched explicitly named cookie $cookie, set SameSite=$samesite_security" }
+                    if { $samesite_debug }{ log local0. "$prefix " }
+                    }
+                }
+            }
+            # Match a cookie prefix (cookie name starts with a prefix from the $cookie_prefixes list)
+            if { $cookie_prefixes ne {} }{
+                foreach cookie [HTTP::cookie names] {
+                    foreach cookie_prefix $cookie_prefixes {
+                        if { $cookie starts_with $cookie_prefix } {
+                            # Remove any pre-existing SameSite attributes from this cookie as most clients use the most strict value if multiple instances are set
+                            HTTP::cookie attribute $cookie remove {SameSite}
+
+                            # Insert the SameSite attribute
+                            HTTP::cookie attribute $cookie insert {SameSite} $samesite_security
+
+                            # If samesite attribute is set to None, then the Secure flag must be set for browsers to accept the cookie
+                            if { [string equal -nocase $samesite_security "none"] } {
+                                HTTP::cookie secure $cookie enable
+                            }
+                            if { $samesite_debug }{ log local0. "$prefix Matched prefixed cookie $cookie, with prefix $cookie_prefix, set SameSite=$samesite_security, breaking from loop" }
+                            break
+                        }
+                    }
+                }
+            }
+
+		}
+
+	} else {
+        if { $duplicate_cookie_names } {
+
+            # Pre 12 code required if Duel domains are used with same cookie name
+
+            # Save the values of Set-Cookie header(s) to set_cookie_headers and then check if they contain the string samesite=none
+            if { [string match -nocase "*samesite=none*" [set set_cookie_headers [HTTP::header values {set-cookie}]]] }{
+
+                # We found at least one set-cookie header with samesite=none
+                # Remove all Set-Cookie headers
+                HTTP::header remove {Set-Cookie}
+
+                # Insert the Set-Cookie headers back in the response with SameSite=None removed
+                foreach set_cookie $set_cookie_headers {
+                    HTTP::header insert {Set-Cookie} [regsub -nocase -all $regex_samesite_none $set_cookie ""]
+                }
+            }
+
+        } else {
+            # User-agent can't handle SameSite=None
+            if { $remove_samesite_for_incompatible_user_agents }{
+
+                # User-agent can't handle SameSite=None, so remove SameSite attribute from all cookies if SameSite=None
+                # This will use CPU cycles on BIG-IP so only enable it if you know BIG-IP or the web application is setting
+                # SameSite=None for all clients including incompatible ones
+                foreach cookie [HTTP::cookie names] {
+                    if { [string tolower [HTTP::cookie attribute $cookie value SameSite]] eq "none" }{
+                        HTTP::cookie attribute $cookie remove SameSite
+                        if { $samesite_debug }{ log local0. "$prefix Removing SameSite for incompatible client from cookie=$cookie" }
+                    }
+                }
+            }
+
+		}
+
 	}
 	# Log the modified Set-Cookie header values
 	if { $samesite_debug }{ log local0. "$prefix Final Set-Cookies: [HTTP::header values {Set-Cookie}]" }
