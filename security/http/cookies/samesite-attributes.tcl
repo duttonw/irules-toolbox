@@ -13,7 +13,7 @@
 #	 1.2 - Aaron Hooley - Added option to rewrite all cookies without naming them explicitly or with prefixes
 #	 1.3 - Aaron Hooley - set samesite_compatible to 0 by default instead of a null string
 #	 1.4 - Aaron Hooley - Fixed issue with removing samesite=none cookies for incompatible clients and setting lax or strict
-#	1.5 - William Dutton - Fixed issue with multi domains with duplicate cookie names.
+#	 1.5 - William Dutton - Fixed issue with multi domains with duplicate cookie names.
 #
 # What the iRule does:
 # Sets SameSite to Strict, Lax or None (and sets Secure when SameSite=None) for compatible user-agents
@@ -152,6 +152,20 @@ when CLIENT_ACCEPTED priority 100 {
 	# Track the user-agent and whether it supports the SameSite cookie attribute
 	set samesite_none_compatible {}
 	set user_agent {}
+
+	if { $duplicate_cookie_names } {
+		# These regexes are used for pre-v12 LTM where we can't use the HTTP::cookie attribute commaand
+
+		# Regex to match samesite=none optionally followed by a semi-colon, space, comma and an option space
+		set regex_samesite_none {samesite=none[\; ,]? ?}
+
+		# Regex to match samesite=VALUE optionally followed by a semi-colon, space, comma and an option space
+		set regex_samesite_any {samesite=(none|strict|lax)[\; ,]? ?}
+
+		# Track the user-agent and whether it supports the SameSite cookie attribute
+		set samesite_compatible 0
+		set user_agent {}
+	}
 
 	if { $samesite_debug }{
 		set prefix "[IP::client_addr]:[TCP::client_port]:"
