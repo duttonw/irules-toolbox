@@ -137,7 +137,7 @@ when CLIENT_ACCEPTED priority 100 {
 	# This should be enabled if You need to change all cookies but there is two cookies with the same name being set to to
 	# different domains, this is required as HTTP::cookie names only gives unique cookies not all cookies and only alters 1 record
 	# set to 1 to enable, 0 to disable
-	set duplicate_cookie_names 0
+	set duplicate_cookie_names 1
 
 	# Log debug to /var/log/ltm? 1=yes, 0=no
 	# set to 0 after testing
@@ -376,8 +376,22 @@ when HTTP_RESPONSE_RELEASE priority 900 {
 		}
 
 	} else {
-        if { $duplicate_cookie_names } {
+        # User-agent can't handle SameSite=None
+        if { $remove_samesite_for_incompatible_user_agents }{
 
+            # User-agent can't handle SameSite=None, so remove SameSite attribute from all cookies if SameSite=None
+            # This will use CPU cycles on BIG-IP so only enable it if you know BIG-IP or the web application is setting
+            # SameSite=None for all clients including incompatible ones
+            foreach cookie [HTTP::cookie names] {
+                if { [string tolower [HTTP::cookie attribute $cookie value SameSite]] eq "none" }{
+                    HTTP::cookie attribute $cookie remove SameSite
+                    if { $samesite_debug }{ log local0. "$prefix Removing SameSite for incompatible client from cookie=$cookie" }
+                }
+            }
+        }
+
+		if { $duplicate_cookie_names } {
+            if { $samesite_debug }{ log local0. "$prefix duplicate_cookie_names true: Removing SameSite for incompatible client" }
             # Pre 12 code required if Duel domains are used with same cookie name
 
             # Save the values of Set-Cookie header(s) to set_cookie_headers and then check if they contain the string samesite=none
@@ -393,22 +407,7 @@ when HTTP_RESPONSE_RELEASE priority 900 {
                 }
             }
 
-        } else {
-            # User-agent can't handle SameSite=None
-            if { $remove_samesite_for_incompatible_user_agents }{
-
-                # User-agent can't handle SameSite=None, so remove SameSite attribute from all cookies if SameSite=None
-                # This will use CPU cycles on BIG-IP so only enable it if you know BIG-IP or the web application is setting
-                # SameSite=None for all clients including incompatible ones
-                foreach cookie [HTTP::cookie names] {
-                    if { [string tolower [HTTP::cookie attribute $cookie value SameSite]] eq "none" }{
-                        HTTP::cookie attribute $cookie remove SameSite
-                        if { $samesite_debug }{ log local0. "$prefix Removing SameSite for incompatible client from cookie=$cookie" }
-                    }
-                }
-            }
-
-		}
+        }
 
 	}
 	# Log the modified Set-Cookie header values
